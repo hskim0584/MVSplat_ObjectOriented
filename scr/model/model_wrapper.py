@@ -271,40 +271,6 @@ class ModelWrapper(LightningModule):
         return image[:, y1:y2, x1:x2]  # C, H, W 형태 유지
         
         
-        
-    def compute_lpips_loss_woRCNN_RandomBB(self, images_before, images_after, box_size=(40, 40)):
-        B, _, H, W = images_before.shape
-        
-        print("size : ", H, ", ", W)
-        lpips_losses = torch.tensor(0.0, device="cuda", requires_grad=True)
-
-        for i in range(B):
-            image_before = images_before[i]
-            image_after = images_after[i]
-            
-            lpips_loss = torch.zeros(1, device="cuda", requires_grad=True)
-    
-            for _ in range(3):
-                # 랜덤 바운딩 박스 좌표 생성
-                box_w, box_h = box_size
-                x1 = random.randint(32, 96 - box_w)
-                y1 = random.randint(32, 96 - box_h)
-                x2 = x1 + box_w
-                y2 = y1 + box_h
-                box = (x1, y1, x2, y2)
-    
-                # 이미지에서 해당 위치 Crop
-                patch_before = self.extract_object_patch(image_before, box)
-                patch_after = self.extract_object_patch(image_after, box)
-    
-                # LPIPS 계산 후 누적
-                
-                loss = self.loss_fasterRCNN(patch_before, patch_after)
-                lpips_loss = lpips_loss + loss
-    
-            lpips_losses = lpips_losses + lpips_loss
-    
-        return lpips_losses / B
     
     
     def draw_boxes_on_image(self, image_tensor, boxes, color="red", width=2):
@@ -518,6 +484,47 @@ class ModelWrapper(LightningModule):
     
         return loss
         
+        
+    def compute_lpips_loss_woRCNN_RandomBB(self, images_before, images_after, box_size=(40, 40)):
+        B, _, H, W = images_before.shape
+        
+        all_pre_crops = []
+        all_post_crops = []
+        for i in range(B):
+            image_before = images_before[i]
+            image_after = images_after[i]
+            
+    
+            for _ in range(3):
+                # 랜덤 바운딩 박스 좌표 생성
+                box_w, box_h = box_size
+                x1 = random.randint(32, 96 - box_w)
+                y1 = random.randint(32, 96 - box_h)
+                x2 = x1 + box_w
+                y2 = y1 + box_h
+                box = (x1, y1, x2, y2)
+    
+                # 이미지에서 해당 위치 Crop
+                patch_before = self.extract_object_patch(image_before, box)
+                patch_after = self.extract_object_patch(image_after, box)
+    
+                # LPIPS 계산 후 누적
+                all_pre_crops.append(self.extract_object_patch(image_before, box))
+                all_post_crops.append(self.extract_object_patch(image_after, box))
+                
+        pre_batch = torch.stack(all_pre_crops)  # (M, 3, 224, 224)
+        post_batch = torch.stack(all_post_crops)
+    
+        feats_pre = self.extract_dino_feature(pre_batch)  # (M, 768)
+        feats_post = self.extract_dino_feature(post_batch)
+    
+        cos_sim = F.cosine_similarity(feats_pre, feats_post, dim=1)  # (M,)
+        loss = 1 - cos_sim.mean()
+    
+        return loss
+        
+        
+        
 
     def training_step(self, batch, batch_idx):#, optimizer_idx):
         batch: BatchedExample = self.data_shim(batch)
@@ -702,8 +709,10 @@ class ModelWrapper(LightningModule):
                 loss_lpips_org = loss_fn.forward(output, batch, gaussians, self.global_step)
                 self.log(f"loss loss_lpips_org", loss_lpips_org)
                 total_loss = total_loss + loss_lpips_org
+                #print("loss_lpips_org", loss_lpips_org)
                 
-                
+                # Wobble + RCNN + DINOv2
+                """
                 if(self.global_step > 100000):
                     bb, vv, cc, hh, ww = target_gt.shape
                     combine_target_gt = target_gt.view(bb*vv, cc, hh, ww)
@@ -713,28 +722,25 @@ class ModelWrapper(LightningModule):
                     dino_loss = self.compute_dino_loss_batch(combine_target_gt, 
                         combine_extrapolate, 
                         batch_boxes_before, 
-                        batch_boxes_before)
+                        batch_boxes_before) * 0.05
                     total_loss = total_loss + dino_loss
-                    print("dino_loss", dino_loss)
+                    #print("dino_loss", dino_loss)
                     self.log(f"loss dino_loss_fasterRCNN", dino_loss)
                     
+                """
                     
                 # Wobble + Random Crop
-                """
-                if(self.global_step > 0):
+                if(self.global_step > 100000):
                 
                     bb, vv, cc, hh, ww = target_gt.shape
                     combine_extrapolate = output_extrapolate.color.view(bb*vv, cc, hh, ww)
                     combine_target_gt = target_gt.view(bb*vv, cc, hh, ww)
                     
-                    lpips_loss = self.compute_lpips_loss_woRCNN_RandomBB(combine_target_gt, combine_extrapolate).item()
-                    #lpips_loss = self.compute_lpips_loss(combine_target_gt, combine_extrapolate).item()
-                    #print("lpips_loss", lpips_loss)
+                    lpips_loss = self.compute_lpips_loss_woRCNN_RandomBB(combine_target_gt, combine_extrapolate).item() * 0.05
+                    #print("RANDOM lpips_loss", lpips_loss)
                     self.log(f"loss lpips_loss_fasterRCNN", lpips_loss)
                     #print("LPIPS Loss per Batch:", lpips_loss)
                     total_loss = total_loss + lpips_loss
-                    
-                """
                 
                 # Wobble + RCNN Object Crop
                 """
