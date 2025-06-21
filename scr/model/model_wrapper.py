@@ -19,7 +19,7 @@ import torchvision
 
 
 import lpips
-
+import os
 # For Faster R-CNN + LPIPS
 from torchvision.transforms import ToPILImage, ToTensor
 from torchvision.models import resnet50, ResNet50_Weights
@@ -30,6 +30,7 @@ import random
 from transformers import AutoImageProcessor, AutoModel
 import torchvision.transforms as T
 import requests
+import torchvision.utils as vutils
 from torchvision.transforms.functional import to_pil_image
 from PIL import ImageDraw
 
@@ -548,8 +549,8 @@ class ModelWrapper(LightningModule):
         
         
         
-        
-        if(self.global_step > 100000):
+        #if(self.global_step > 0):
+        if(self.global_step > 99999):
             _, v, _, _ = batch["context"]["extrinsics"].shape
     
             num_frames = 600
@@ -566,7 +567,7 @@ class ModelWrapper(LightningModule):
             origin_b = E1[:, :3, 3].clone()
             delta = (origin_a - origin_b).norm(dim=-1)  # (B,)
             
-            factor_radius = 3.0
+            factor_radius = 0.8
             depth = 3.0  # 시야선 상에서 중심으로 삼을 거리
             
             # 중심점 계산: cam_pos + (-Z) * depth
@@ -629,9 +630,32 @@ class ModelWrapper(LightningModule):
                 (h, w), 
                 depth_mode=self.train_cfg.depth_mode,#"depth"
             )
+            
         
-        
-        
+            save_dir = "./output_extrapolate_images"
+            os.makedirs(save_dir, exist_ok=True)
+            target_gt = batch["target"]["image"]
+            # output_extrapolate: (B, C, H, W) 라고 가정
+            bb, vv, cc, hh, ww = target_gt.shape
+            combine_extrapolate = output_extrapolate.color.view(bb*vv, cc, hh, ww)
+            B = combine_extrapolate.shape[0]
+            
+            """
+            # 이미지별로 저장
+            for i in range(B):
+                img = combine_extrapolate[i].detach().cpu()  # (C, H, W)
+                
+                # Clamp: [0,1] 범위 보장 (필수!)
+                img = img.clamp(0, 1)
+                
+                # Tensor -> PIL Image
+                pil_img = to_pil_image(img)
+                
+                # 저장
+                pil_img.save(os.path.join(save_dir, f"extrapolate_{i}.png"))
+            
+            print(f"Saved {B} images to {save_dir}")
+            """
         
         
         
@@ -712,8 +736,9 @@ class ModelWrapper(LightningModule):
                 #print("loss_lpips_org", loss_lpips_org)
                 
                 # Wobble + RCNN + DINOv2
-                """
-                if(self.global_step > 100000):
+                
+                
+                if(self.global_step > 99999):
                     bb, vv, cc, hh, ww = target_gt.shape
                     combine_target_gt = target_gt.view(bb*vv, cc, hh, ww)
                     combine_extrapolate = output_extrapolate.color.view(bb*vv, cc, hh, ww)
@@ -726,9 +751,9 @@ class ModelWrapper(LightningModule):
                     total_loss = total_loss + dino_loss
                     #print("dino_loss", dino_loss)
                     self.log(f"loss dino_loss_fasterRCNN", dino_loss)
-                    
+                
+                
                 """
-                    
                 # Wobble + Random Crop
                 if(self.global_step > 100000):
                 
@@ -742,7 +767,10 @@ class ModelWrapper(LightningModule):
                     #print("LPIPS Loss per Batch:", lpips_loss)
                     total_loss = total_loss + lpips_loss
                 
+                """
                 # Wobble + RCNN Object Crop
+                
+                
                 """
                 if(self.global_step > 0):
                 
@@ -826,6 +854,9 @@ class ModelWrapper(LightningModule):
 
     def test_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
+        
+        #print("batch[target][image].shape", batch["target"]["image"].shape)
+        
         b, v, _, h, w = batch["target"]["image"].shape
         assert b == 1
 
@@ -854,60 +885,14 @@ class ModelWrapper(LightningModule):
         rgb_gt = batch["target"]["image"][0]
         
         
-        
-        
-        """
-        
-        _, v22, _, _ = batch["context"]["extrinsics"].shape
-        num_frames = 600
-        t = torch.linspace(0, 1, num_frames, dtype=torch.float32, device=self.device)
-
-        target_sample = ['context', 'target'][1]
-
-        origin_a = batch[target_sample]["extrinsics"][:, 0, :3, 3].clone()
-        origin_b = batch[target_sample]["extrinsics"][:, 1, :3, 3].clone()
-        delta = (origin_a - origin_b).norm(dim=-1)
-        
-        factor_radius = 1.0
-        
-        tf = generate_wobble_transformation(delta * factor_radius, t, 5, scale_radius_with_t=False,)
-        extrinsics_new = interpolate_extrinsics(batch[target_sample]["extrinsics"][0, 0].clone(), (batch[target_sample]["extrinsics"][0, 1] if v22 == 2 else batch[target_sample]["extrinsics"][0, 0]), t * 5 - 2,)
-        intrinsics_new = interpolate_intrinsics(batch[target_sample]["intrinsics"][0, 0].clone(), (batch[target_sample]["intrinsics"][0, 1] if v22 == 2 else batch[target_sample]["intrinsics"][0, 0]), t * 5 - 2,)
-        extrinsics_new, intrinsics_new = extrinsics_new @ tf, intrinsics_new[None]
-        
-        indices = torch.randint(0, num_frames, (3,))
-        extrinsics_new = extrinsics_new[:, indices, :, :]
-        
-        
-        output_extrapolate = self.decoder.forward(
-            gaussians,
-            extrinsics_new,
-            batch[target_sample]["intrinsics"],
-            batch[target_sample]["near"],
-            batch[target_sample]["far"],
-            (h, w), 
-            depth_mode=self.train_cfg.depth_mode,#"depth"
-        )
-        
-        
-        lpips_loss = self.compute_lpips_loss(rgb_gt, output_extrapolate.color[0]).item()
-        
-        
-        
-        """
-        
-        
-        
-        
-        
-        
         #*************************************    HS Code begin    *************************************#
         #
         #
         #
         #
         #HS's Code begin
-        if self.test_cfg.splat and self.Flag < 10:
+        if self.Flag < 4000:
+        #if self.test_cfg.splat:
         
             gaussians_output = {
                 'means': gaussians.means[0],  # 10 Gaussians, random positions
@@ -915,7 +900,7 @@ class ModelWrapper(LightningModule):
                 'harmonics': gaussians.harmonics[0],  # Random colors
                 'opacities': gaussians.opacities[0]  # Random transparency
             }
-            output_file_output = "output%d.splat" %self.Flag
+            output_file_output = "splatF/output%d.splat" %self.Flag
             
             SH_C0 = 0.28209479177387814
             with open(output_file_output, 'w', encoding='utf-8') as f:
@@ -968,6 +953,37 @@ class ModelWrapper(LightningModule):
                     scale.tofile(f, format='f4')    #float32 * 3 : 4byte * 3 = 12 byte
                     color.tofile(f, format='u1')
                     q_scaled.tofile(f, format='u1') #uint8 * 4 : 1byte * 4 = 4byte
+                    
+                context_extrinsics = batch["context"]["extrinsics"][0]  # [C, 4, 4]
+                target_extrinsics = batch["target"]["extrinsics"][0]    # [T, 4, 4]
+        
+                for v in range(context_extrinsics.shape[0]):
+                    cam_pose = context_extrinsics[v].cpu().numpy()  # (4,4)
+                    cam_position = cam_pose[:3, 3].astype(np.float32)
+        
+                    scale = np.array([0.01, 0.01, 0.01], dtype=np.float32)
+                    color = np.array([255, 0, 0, 255], dtype=np.uint8)  # Red for context
+                    q_identity = np.array([128, 128, 128, 128], dtype=np.uint8)
+        
+                    cam_position.tofile(f)
+                    scale.tofile(f)
+                    color.tofile(f)
+                    q_identity.tofile(f)
+        
+                for v in range(target_extrinsics.shape[0]):
+                    cam_pose = target_extrinsics[v].cpu().numpy()  # (4,4)
+                    cam_position = cam_pose[:3, 3].astype(np.float32)
+        
+                    scale = np.array([0.01, 0.01, 0.01], dtype=np.float32)
+                    color = np.array([0, 0, 255, 255], dtype=np.uint8)  # Blue for target
+                    q_identity = np.array([128, 128, 128, 128], dtype=np.uint8)
+        
+                    cam_position.tofile(f)
+                    scale.tofile(f)
+                    color.tofile(f)
+                    q_identity.tofile(f)
+                    
+                    
             self.Flag += 1
             
             
